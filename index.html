@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Alarm Clock — Math to Turn Off (Loud Default)</title>
+<style>
+  :root{--bg:#0f1724;--card:#111827;--accent:#06b6d4;--muted:#9ca3af;--glass: rgba(255,255,255,0.03)}
+  *{box-sizing:border-box;font-family:Inter, system-ui, sans-serif}
+  body{margin:0;background:linear-gradient(180deg,var(--bg),#071023);color:#e6eef6;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+  .wrap{width:100%;max-width:760px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.06));border-radius:12px;padding:22px;box-shadow:0 8px 30px rgba(2,6,23,0.6)}
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+  h1{font-size:20px;margin:0}
+  p.lead{margin:0;color:var(--muted);font-size:13px}
+  .clock{display:flex;align-items:center;gap:18px}
+  .time{font-size:56px;letter-spacing:1px;font-weight:600}
+  .small{font-size:14px;color:var(--muted)}
+  .controls{margin-top:18px;display:flex;gap:12px;flex-wrap:wrap}
+  input[type=time], input[type=file]{background:var(--glass);border:1px solid rgba(255,255,255,0.04);padding:10px 12px;border-radius:8px;color:inherit;font-size:16px}
+  button{background:var(--accent);border:none;color:#042024;padding:10px 14px;border-radius:8px;font-weight:600;cursor:pointer}
+  button.ghost{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted)}
+  .status{margin-top:14px;color:var(--muted);font-size:14px}
+  .alarm-list{margin-top:16px}
+  .alarm-row{display:flex;align-items:center;justify-content:space-between;padding:12px;border-radius:8px;background:rgba(255,255,255,0.02);margin-bottom:8px}
+  .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center;z-index:50}
+  .modal{background:#0b1220;padding:18px;border-radius:12px;min-width:320px;max-width:90%;box-shadow:0 10px 40px rgba(2,6,23,0.7);border:1px solid rgba(255,255,255,0.04)}
+  .math-q{font-size:20px;margin-bottom:12px}
+  .modal input{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
+  .modal .actions{display:flex;gap:10px;margin-top:12px}
+  footer{margin-top:16px;color:var(--muted);font-size:12px;text-align:center}
+  @media (max-width:480px){.time{font-size:40px}}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Alarm Clock — Math to Turn Off</h1>
+        <p class="lead">Set an alarm. To stop it you must answer a math question.</p>
+      </div>
+      <div class="small">Made for Rohit — single file</div>
+    </header>
+
+    <section class="clock">
+      <div>
+        <div class="time" id="liveTime">00:00:00</div>
+        <div class="small" id="liveDate"></div>
+      </div>
+    </section>
+
+    <div class="controls">
+      <input type="time" id="alarmTime" />
+      <button id="setBtn">Set Alarm</button>
+      <button id="clearBtn" class="ghost">Clear Alarm</button>
+      <button id="snoozeBtn" class="ghost">Snooze 5 min</button>
+      <!-- optional: upload custom file; if user uploads, that will be used instead of default -->
+      <input type="file" id="customFile" accept="audio/*" title="Optional: upload your audio (mp3/ogg)" />
+    </div>
+
+    <div class="status" id="status">No alarm set. (Click <strong>Set Alarm</strong> once to allow audio.)</div>
+
+    <div class="alarm-list" id="alarmList" aria-live="polite"></div>
+
+    <footer>Tip: allow sound & vibration. Default sound is loud (generated). You can upload custom audio too.</footer>
+  </div>
+
+  <!-- Modal for math -->
+  <div class="modal-backdrop" id="modal">
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="math-q" id="mathQ">What is 2 + 2 ?</div>
+      <input type="number" id="mathAns" autocomplete="off" />
+      <div class="actions">
+        <button id="submitAns">Submit</button>
+        <button id="tryAnother" class="ghost">New Question</button>
+      </div>
+      <div style="margin-top:10px;color:var(--muted);font-size:13px">Answer correctly to stop the alarm. Wrong answers keep the alarm on.</div>
+    </div>
+  </div>
+
+<script>
+/* ---------- UI elements ---------- */
+const liveTime = document.getElementById('liveTime');
+const liveDate = document.getElementById('liveDate');
+const alarmTimeInput = document.getElementById('alarmTime');
+const setBtn = document.getElementById('setBtn');
+const clearBtn = document.getElementById('clearBtn');
+const snoozeBtn = document.getElementById('snoozeBtn');
+const customFile = document.getElementById('customFile');
+const status = document.getElementById('status');
+const alarmList = document.getElementById('alarmList');
+
+const modal = document.getElementById('modal');
+const mathQ = document.getElementById('mathQ');
+const mathAns = document.getElementById('mathAns');
+const submitAns = document.getElementById('submitAns');
+const tryAnother = document.getElementById('tryAnother');
+
+/* ---------- State ---------- */
+let alarmTime = null; // 'HH:MM'
+let alarmSet = false;
+let alarmTriggered = false;
+let correctAnswer = null;
+
+/* ---------- Audio (default: generated bell) ---------- */
+let audioCtx = null;
+let bellInterval = null;         // interval id for repeated pulses
+let masterGain = null;
+let customAudioElem = null;      // HTMLAudioElement when user uploads
+
+function initAudioContextIfNeeded(){
+  if(!audioCtx){
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (e) {
+      console.warn('AudioContext not supported:', e);
+      audioCtx = null;
+    }
+  }
+}
+
+/* Play a single bell-like pulse (uses short ADSR and a few oscillators) */
+function playBellPulse(targetGain){
+  if(!audioCtx) return;
+  const now = audioCtx.currentTime;
+
+  // create a small gain node for envelope
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.0001, now);
+  g.connect(targetGain);
+
+  // 3 oscillators for a metallic bell-ish sound
+  const o1 = audioCtx.createOscillator(); o1.type = 'sine'; o1.frequency.value = 880; // base
+  const o2 = audioCtx.createOscillator(); o2.type = 'sine'; o2.frequency.value = 1320; // overtone
+  const o3 = audioCtx.createOscillator(); o3.type = 'triangle'; o3.frequency.value = 1760; // shimmer
+
+  // slight random detune for naturalness
+  o1.detune.value = (Math.random()-0.5)*15;
+  o2.detune.value = (Math.random()-0.5)*30;
+  o3.detune.value = (Math.random()-0.5)*50;
+
+  o1.connect(g); o2.connect(g); o3.connect(g);
+
+  // envelope: quick attack, long decay
+  const attack = 0.005;
+  const decay = 1.6; // seconds
+  g.gain.linearRampToValueAtTime(1.0, now + attack);
+  // exponential decay to near silent
+  g.gain.exponentialRampToValueAtTime(0.0001, now + decay);
+
+  // start & stop
+  o1.start(now); o2.start(now); o3.start(now);
+  o1.stop(now + decay + 0.05);
+  o2.stop(now + decay + 0.05);
+  o3.stop(now + decay + 0.05);
+}
+
+/* Start continuous bell pattern (repeats pulses every ~600ms) */
+function startDefaultBell(){
+  initAudioContextIfNeeded();
+  if(!audioCtx) return;
+
+  // if masterGain exists already, don't recreate
+  if(!masterGain){
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 0.85; // overall loudness (0.0 - 1.0)
+    masterGain.connect(audioCtx.destination);
+  }
+
+  if(bellInterval) return; // already running
+
+  // play one immediately then repeat
+  playBellPulse(masterGain);
+  bellInterval = setInterval(()=> {
+    playBellPulse(masterGain);
+  }, 600); // every 600ms -> fast repeated ringing
+}
+
+/* Stop generated bell */
+function stopDefaultBell(){
+  if(bellInterval){
+    clearInterval(bellInterval);
+    bellInterval = null;
+  }
+  if(masterGain){
+    try { masterGain.disconnect(); } catch(e) {}
+    masterGain = null;
+  }
+}
+
+/* ---------- Custom file support ---------- */
+customFile.addEventListener('change', (e)=>{
+  const f = e.target.files[0];
+  if(!f) return;
+  if(customAudioElem){
+    try { customAudioElem.pause(); customAudioElem.src = ''; } catch(e) {}
+  }
+  customAudioElem = new Audio(URL.createObjectURL(f));
+  customAudioElem.loop = true;
+  customAudioElem.volume = 1.0;
+  // try to unlock by briefly playing and pausing on user gesture (Set Alarm also does this)
+  // (no need to auto-play now)
+  alert('Custom sound loaded: ' + f.name + '\nIt will play when the alarm rings.');
+});
+
+/* ---------- Clock and rendering ---------- */
+function pad(n){ return String(n).padStart(2,'0'); }
+function updateClock(){
+  const now = new Date();
+  liveTime.textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  liveDate.textContent = now.toDateString();
+  if(alarmSet && !alarmTriggered){
+    const hhmm = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    if(hhmm === alarmTime){
+      triggerAlarm();
+    }
+  }
+}
+setInterval(updateClock, 500);
+updateClock();
+
+function renderAlarms(){
+  alarmList.innerHTML = '';
+  if(alarmSet && alarmTime){
+    const row = document.createElement('div');
+    row.className = 'alarm-row';
+    row.innerHTML = `<div>Alarm: <strong>${alarmTime}</strong></div><div>${alarmTriggered?'<em>Ringing</em>':'<em>Pending</em>'}</div>`;
+    alarmList.appendChild(row);
+  }
+}
+
+/* ---------- Math Q ---------- */
+function generateQuestion(){
+  const ops=['+','-','×'];
+  const op = ops[Math.floor(Math.random()*ops.length)];
+  let a,b,ans;
+  if(op === '+'){ a = Math.floor(Math.random()*20)+1; b = Math.floor(Math.random()*20)+1; ans = a + b; }
+  else if(op === '-'){ a = Math.floor(Math.random()*20)+5; b = Math.floor(Math.random()*Math.min(a-1,15))+1; ans = a - b; }
+  else { a = Math.floor(Math.random()*9)+1; b = Math.floor(Math.random()*9)+1; ans = a * b; }
+  correctAnswer = ans;
+  mathQ.textContent = `Solve: ${a} ${op} ${b} = ?`;
+  mathAns.value = '';
+  mathAns.focus();
+}
+
+/* ---------- Alarm actions ---------- */
+function setAlarm(){
+  const val = alarmTimeInput.value;
+  if(!val){ alert('Please choose a time first'); return; }
+  // unlock audio on this user gesture:
+  initAudioContextIfNeeded();
+  if(audioCtx && audioCtx.state === 'suspended'){
+    audioCtx.resume().catch(()=>{});
+  }
+  if(customAudioElem){
+    // attempt a quick play-pause to allow playback later in some browsers
+    customAudioElem.play().then(()=>{ customAudioElem.pause(); customAudioElem.currentTime = 0; }).catch(()=>{});
+  }
+  alarmTime = val;
+  alarmSet = true;
+  alarmTriggered = false;
+  status.textContent = `Alarm set for ${alarmTime}`;
+  renderAlarms();
+}
+
+function clearAlarm(){
+  alarmTime = null; alarmSet = false; alarmTriggered = false;
+  // stop whichever sound may be playing
+  stopAllSounds();
+  status.textContent = 'No alarm set.';
+  renderAlarms();
+  closeModal();
+}
+
+function snooze(){
+  if(!alarmSet && !alarmTriggered){ alert('No active alarm to snooze'); return; }
+  const now = new Date();
+  now.setMinutes(now.getMinutes() + 5);
+  alarmTime = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  alarmSet = true; alarmTriggered = false;
+  stopAllSounds(); closeModal();
+  status.textContent = `Snoozed. New alarm at ${alarmTime}`;
+  renderAlarms();
+}
+
+function triggerAlarm(){
+  if(alarmTriggered) return;
+  alarmTriggered = true;
+  // prefer custom uploaded audio (if any), else use generated bell
+  if(customAudioElem && customAudioElem.src){
+    try {
+      customAudioElem.currentTime = 0;
+      customAudioElem.play().catch(e => console.warn('Custom play error', e));
+    } catch(e){ console.warn(e); }
+  } else {
+    // start generated bell sound
+    startDefaultBell();
+  }
+  // vibrate pattern if available
+  if(navigator.vibrate) navigator.vibrate([300,150,300]);
+  openModal();
+  status.textContent = `Alarm ringing! Answer the question to stop it.`;
+  renderAlarms();
+}
+
+/* stop whichever sound is active */
+function stopAllSounds(){
+  // stop custom
+  if(customAudioElem){
+    try { customAudioElem.pause(); customAudioElem.currentTime = 0; } catch(e){}
+  }
+  // stop generated
+  stopDefaultBell();
+  if(navigator.vibrate) navigator.vibrate(0);
+}
+
+/* ---------- Modal control & submit ---------- */
+function openModal(){ generateQuestion(); modal.style.display = 'flex'; }
+function closeModal(){ modal.style.display = 'none'; }
+
+submitAns.addEventListener('click', ()=>{
+  const val = Number(mathAns.value);
+  if(Number.isNaN(val)){ alert('Please enter a number'); mathAns.focus(); return; }
+  if(val === correctAnswer){
+    stopAllSounds();
+    closeModal();
+    alarmSet = false; alarmTriggered = false; alarmTime = null;
+    status.textContent = 'Correct! Alarm stopped.';
+    renderAlarms();
+  } else {
+    if(navigator.vibrate) navigator.vibrate([80,40,80]);
+    alert('Wrong answer — try another question.');
+    generateQuestion();
+  }
+});
+tryAnother.addEventListener('click', generateQuestion);
+
+/* allow Enter to submit */
+mathAns.addEventListener('keydown', (e)=>{ if(e.key === 'Enter') submitAns.click(); });
+
+/* button wiring */
+setBtn.addEventListener('click', setAlarm);
+clearBtn.addEventListener('click', clearAlarm);
+snoozeBtn.addEventListener('click', snooze);
+
+/* prevent accidental modal close (keep modal until solved) */
+/* (you can add close on outside click if you prefer) */
+
+</script>
+</body>
+</html>
